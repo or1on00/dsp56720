@@ -1,0 +1,3 @@
+[submodule "dsp56300"]
+	path = dsp56300
+	url = https://github.com/or1on00/dsp56300.git
