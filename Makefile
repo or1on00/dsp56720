@@ -10,12 +10,14 @@ dsp56720emu: $(patsubst %.cpp,%.o,$(shell find -name '*.cpp' ! -path './dsp56300
                 -lasmjit \
                 -lrt \
                 -lpthread \
-                -lreadline
+                -lreadline \
+		$(shell pkg-config fuse3 --libs)
 
 -include $(shell find -name '*.d')
 
 %.o: %.cpp
-	g++ -g -c -MMD -MP -I dsp56300/source -I dsp56300/source/asmjit/src $< -o $@
+	g++ -g -c -MMD -MP -I dsp56300/source -I dsp56300/source/asmjit/src $< -o $@ \
+		$(shell pkg-config fuse3 --cflags)
 
 dsp56300:
 	$(MAKE) -C $@

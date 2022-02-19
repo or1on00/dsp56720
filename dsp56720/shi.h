@@ -63,7 +63,11 @@ public:
 	}
 
 	virtual void reset() override {}
-	virtual void terminate() override {}
+
+	virtual void terminate() override {
+		while(!m_rx.full())
+			m_rx.push_back(0);
+	}
 
 	dsp56k::TWord readStatusControlRegister(dsp56k::Instruction inst) {
 		m_hcsr |= HCSR::HRNE(!m_rx.empty());
