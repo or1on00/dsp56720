@@ -123,6 +123,7 @@ void Peripherals::exec() {
 
 void Peripherals::reset() {
 	for (auto& peripheral : m_peripherals) {
+		peripheral.get().connect(getDSP());
 		peripheral.get().reset();
 	}
 }
