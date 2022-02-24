@@ -6,7 +6,7 @@
 #include "bitfield.h"
 
 namespace dsp56720 {
-class EnhancedSerialAudioInterface : public Peripheral, public dsp56k::Audio {
+class EnhancedSerialAudioInterface : public Peripheral {
 public:
 	struct SR : BitField<dsp56k::TWord> {
 		using BitField<dsp56k::TWord>::operator=;
@@ -52,15 +52,17 @@ public:
 
 		// Time to xfer samples!
 		m_cyclesSinceWrite -= m_cgm.cyclesPerSample();
-		for (int i = 0; i < 3; i++) {
+		for (int i = 0; i < m_audioOutputs.size(); i++) {
 			if (outputEnabled(i)) {
-				writeTXimpl(i, m_tx[i]);
+				m_audioOutputs[i].waitNotFull();
+				m_audioOutputs[i].push_back(m_tx[i]);
 			}
 		}
 
-		for (int i=0; i < 1; i++) {
+		for (int i=0; i < m_audioInputs.size(); i++) {
 			if (inputEnabled(i)) {
-				m_rx[i] = readRXimpl(i);
+				m_audioInputs[i].waitNotEmpty();
+				m_rx[i] = m_audioInputs[i].pop_front();
 			}
 		}
 
@@ -97,10 +99,25 @@ public:
 			while (!m_audioInputs[i].full())
 				m_audioInputs[i].push_back(0);
 		}
+
+		for (size_t i = 0; i < m_audioOutputs.size(); ++i) {
+			while (!m_audioOutputs[i].full())
+				m_audioOutputs[i].push_back(0);
+		}
 	}
 
 	virtual std::vector<Register> registers() override {
 		return m_registers;
+	}
+
+	void writeInput(size_t n, dsp56k::TWord word) {
+		m_audioInputs[n].waitNotFull();
+		m_audioInputs[n].push_back(word);
+	}
+
+	dsp56k::TWord readOutput(size_t n) {
+		m_audioOutputs[n].waitNotEmpty();
+		return m_audioOutputs[n].pop_front();
 	}
 
 	dsp56k::TWord readRX(uint32_t index) {
@@ -147,13 +164,13 @@ public:
 	}
 
 	void writeReceiveControlRegister(dsp56k::TWord val) {
-		LOG("Write ESAI RCR " << HEX(val));
+		LOG("Write ESAI RCR " << HEX(val) << " RE=" << RCR::RE(val));
 		m_rcr = val;
 	}
 
 	void writeTransmitControlRegister(dsp56k::TWord val) {
 		m_sr |= SR::TUE(0);
-		LOG("Write ESAI TCR " << HEX(val));
+		LOG("Write ESAI TCR " << HEX(val) << " TE=" << TCR::TE(val));
 		m_tcr = val;
 	}
 
@@ -183,10 +200,13 @@ private:
 	}
 
 	bool outputEnabled(uint32_t index) const {
-		return TCR::TE(m_rcr).test(index);
+		return TCR::TE(m_tcr).test(index);
 	}
 
 	ClockGenerationModule& m_cgm;
+
+	std::array<dsp56k::RingBuffer<uint32_t, 8192, true>, 4> m_audioInputs;
+	std::array<dsp56k::RingBuffer<uint32_t, 8192, true>, 6> m_audioOutputs;
 
 	// Words written by the DSP
 	std::array<dsp56k::TWord, 6> m_tx;

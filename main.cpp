@@ -215,19 +215,15 @@ public:
 	SerialInterface(dsp56720::SerialHostInterace& shi) : m_shi(shi) {}
 
 	virtual std::size_t size() {
-		return 4096; // TODO:
+		return 4096;
 	}
 
 	virtual std::size_t read(char *buf, std::size_t count, std::size_t pos) override {
-		// m_shi.readTX();
 		return 0;
 	}
 
 	virtual std::size_t write(const char *buf, std::size_t count, std::size_t pos) override {
-		// FIXME: Blocking write causes unkillable emulator
-		// FIXME: Do we lose bytes in between write calls?
-		std::cout << "WRITE SHI: " << count << std::endl;
-
+		assert(count % 4 == 0);
 		size_t wordCount = count / sizeof(dsp56k::TWord);
 		m_shi.writeRX(reinterpret_cast<const dsp56k::TWord*>(buf), wordCount);
 		return wordCount * sizeof(dsp56k::TWord);
@@ -235,6 +231,68 @@ public:
 
 private:
 	dsp56720::SerialHostInterace& m_shi;
+};
+
+class AudioInputInterface : public File {
+public:
+	AudioInputInterface(dsp56720::EnhancedSerialAudioInterface& esai, size_t n)
+		: m_esai(esai), m_n(n) {}
+
+	virtual std::size_t size() {
+		return 4096;
+	}
+
+	virtual std::size_t read(char *buf, std::size_t count, std::size_t pos) override {
+		return 0;
+	}
+
+	virtual std::size_t write(const char *buf, std::size_t count, std::size_t pos) override {
+		// TODO: Allow different buffer sizes
+		assert(count % 4 == 0);
+
+		auto words = reinterpret_cast<const dsp56k::TWord*>(buf);
+
+		for (size_t i = 0; i < count / sizeof(dsp56k::TWord); i++) {
+			m_esai.writeInput(m_n, *words++);
+		}
+
+		return count;
+	}
+
+private:
+	dsp56720::EnhancedSerialAudioInterface& m_esai;
+	size_t m_n;
+};
+
+class AudioOutputInterface : public File {
+public:
+	AudioOutputInterface(dsp56720::EnhancedSerialAudioInterface& esai, size_t n)
+		: m_esai(esai), m_n(n) {}
+
+	virtual std::size_t size() {
+		return 4096;
+	}
+
+	virtual std::size_t read(char *buf, std::size_t count, std::size_t pos) override {
+		// TODO: Allow different buffer sizes
+		assert(count % 4 == 0);
+
+		auto words = reinterpret_cast<dsp56k::TWord*>(buf);
+
+		for (size_t i = 0; i < count / sizeof(dsp56k::TWord); i++) {
+			*words++ = m_esai.readOutput(m_n);
+		}
+
+		return count;
+	}
+
+	virtual std::size_t write(const char *buf, std::size_t count, std::size_t pos) override {
+		return 0;
+	}
+
+private:
+	dsp56720::EnhancedSerialAudioInterface& m_esai;
+	size_t m_n;
 };
 
 std::function<void(int)> g_signalHandler;
@@ -253,7 +311,6 @@ int main(int argc, char *argv[]) {
 	fs.put("/pins/reset", PinInterface{reset});
 	fs.put("/pins/moda0", PinInterface{moda0});
 
-
 	dsp56720::ClockGenerationModule cgm;
 	dsp56720::ChipConfigurationModule ccm;
 	dsp56720::SerialHostInterace shi0;
@@ -261,6 +318,10 @@ int main(int argc, char *argv[]) {
 	dsp56720::ChipIdentification chidr{0};
 
 	fs.put("/peripherals/shi0", SerialInterface{shi0});
+	fs.put("/peripherals/esai/input0", AudioInputInterface{esai, 0});
+	fs.put("/peripherals/esai/ouput0", AudioOutputInterface{esai, 0});
+	fs.put("/peripherals/esai/ouput1", AudioOutputInterface{esai, 1});
+	fs.put("/peripherals/esai/ouput2", AudioOutputInterface{esai, 2});
 
 	dsp56720::Peripherals peripherals{cgm, ccm, shi0, esai, chidr};
 
@@ -299,12 +360,15 @@ int main(int argc, char *argv[]) {
 		std::cout << "Booted" << std::endl;
 
 		while (running) {
+			std::cout << HEX(dsp.getPC().toWord()) << std::endl;
 			dsp.exec();
 		}
 	});
 	struct fuse* fuse = NULL;
 
 	g_signalHandler = [&](auto signal) {
+		std::cout << "INTERRUPTED!" << std::endl;
+
 		if (fuse) {
 			fuse_exit(fuse);
 		}
@@ -325,7 +389,8 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	int ret = fuse_loop(fuse);
+	struct fuse_loop_config cfg = { .max_idle_threads = 10 };
+	int ret = fuse_loop_mt(fuse, &cfg);
 
 	fuse_unmount(fuse);
 	fuse_destroy(fuse);
