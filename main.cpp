@@ -225,7 +225,13 @@ public:
 	virtual std::size_t write(const char *buf, std::size_t count, std::size_t pos) override {
 		assert(count % 4 == 0);
 		size_t wordCount = count / sizeof(dsp56k::TWord);
-		m_shi.writeRX(reinterpret_cast<const dsp56k::TWord*>(buf), wordCount);
+
+		try {
+			m_shi.writeRX(reinterpret_cast<const dsp56k::TWord*>(buf), wordCount);
+		} catch(dsp56720::QueueShutdown&) {
+			return 0;
+		}
+
 		return wordCount * sizeof(dsp56k::TWord);
 	}
 
@@ -252,8 +258,12 @@ public:
 
 		auto words = reinterpret_cast<const dsp56k::TWord*>(buf);
 
-		for (size_t i = 0; i < count / sizeof(dsp56k::TWord); i++) {
-			m_esai.writeInput(m_n, *words++);
+		try {
+			for (size_t i = 0; i < count / sizeof(dsp56k::TWord); i++) {
+				m_esai.writeInput(m_n, *words++);
+			}
+		} catch(dsp56720::QueueShutdown&) {
+			return 0;
 		}
 
 		return count;
@@ -279,8 +289,12 @@ public:
 
 		auto words = reinterpret_cast<dsp56k::TWord*>(buf);
 
-		for (size_t i = 0; i < count / sizeof(dsp56k::TWord); i++) {
-			*words++ = m_esai.readOutput(m_n);
+		try {
+			for (size_t i = 0; i < count / sizeof(dsp56k::TWord); i++) {
+				*words++ = m_esai.readOutput(m_n);
+			}
+		} catch(dsp56720::QueueShutdown&) {
+			return 0;
 		}
 
 		return count;
@@ -369,12 +383,12 @@ int main(int argc, char *argv[]) {
 	g_signalHandler = [&](auto signal) {
 		std::cout << "INTERRUPTED!" << std::endl;
 
+		running = false;
+		dsp.terminate();
+
 		if (fuse) {
 			fuse_exit(fuse);
 		}
-
-		running = false;
-		dsp.terminate();
 	};
 
 	// TODO: Do we have to pass fuse args?

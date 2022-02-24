@@ -54,15 +54,13 @@ public:
 		m_cyclesSinceWrite -= m_cgm.cyclesPerSample();
 		for (int i = 0; i < m_audioOutputs.size(); i++) {
 			if (outputEnabled(i)) {
-				m_audioOutputs[i].waitNotFull();
-				m_audioOutputs[i].push_back(m_tx[i]);
+				m_audioOutputs[i].push(m_tx[i]);
 			}
 		}
 
 		for (int i=0; i < m_audioInputs.size(); i++) {
 			if (inputEnabled(i)) {
-				m_audioInputs[i].waitNotEmpty();
-				m_rx[i] = m_audioInputs[i].pop_front();
+				m_rx[i] = m_audioInputs[i].pop();
 			}
 		}
 
@@ -95,14 +93,12 @@ public:
 	virtual void reset() override {}
 
 	virtual void terminate() override {
-		for (size_t i = 0; i < m_audioInputs.size(); ++i) {
-			while (!m_audioInputs[i].full())
-				m_audioInputs[i].push_back(0);
+		for (auto& input : m_audioInputs) {
+			input.shutdown();
 		}
 
-		for (size_t i = 0; i < m_audioOutputs.size(); ++i) {
-			while (!m_audioOutputs[i].full())
-				m_audioOutputs[i].push_back(0);
+		for (auto& output : m_audioOutputs) {
+			output.shutdown();
 		}
 	}
 
@@ -111,13 +107,11 @@ public:
 	}
 
 	void writeInput(size_t n, dsp56k::TWord word) {
-		m_audioInputs[n].waitNotFull();
-		m_audioInputs[n].push_back(word);
+		m_audioInputs[n].push(word);
 	}
 
 	dsp56k::TWord readOutput(size_t n) {
-		m_audioOutputs[n].waitNotEmpty();
-		return m_audioOutputs[n].pop_front();
+		return m_audioOutputs[n].pop();
 	}
 
 	dsp56k::TWord readRX(uint32_t index) {
@@ -205,8 +199,8 @@ private:
 
 	ClockGenerationModule& m_cgm;
 
-	std::array<dsp56k::RingBuffer<uint32_t, 8192, true>, 4> m_audioInputs;
-	std::array<dsp56k::RingBuffer<uint32_t, 8192, true>, 6> m_audioOutputs;
+	std::array<Queue<uint32_t, CircularBuffer<uint32_t, 8192>>, 4> m_audioInputs;
+	std::array<Queue<uint32_t, CircularBuffer<uint32_t, 8192>>, 6> m_audioOutputs;
 
 	// Words written by the DSP
 	std::array<dsp56k::TWord, 6> m_tx;

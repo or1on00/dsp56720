@@ -5,6 +5,7 @@
 #include <dsp56kEmu/interrupts.h>
 #include "peripherals.h"
 #include "bitfield.h"
+#include "queue.h"
 
 namespace dsp56720 {
 class SerialHostInterace : public Peripheral {
@@ -65,8 +66,8 @@ public:
 	virtual void reset() override {}
 
 	virtual void terminate() override {
-		while(!m_rx.full())
-			m_rx.push_back(0);
+		m_rx.shutdown();
+		m_tx.shutdown();
 	}
 
 	dsp56k::TWord readStatusControlRegister(dsp56k::Instruction inst) {
@@ -86,10 +87,9 @@ public:
 		writeRX(&_data[0], _data.size());
 	}
 
-	void writeRX(const dsp56k::TWord* _data, size_t _count) {
-		for (size_t i = 0; i < _count; ++i) {
-			m_rx.waitNotFull();
-			m_rx.push_back(_data[i] & 0x00ffffff);
+	void writeRX(const dsp56k::TWord* data, size_t count) {
+		for (size_t i = 0; i < count; ++i) {
+			m_rx.push(data[i] & 0x00ffffff);
 			if (HCSR::HEN(m_hcsr) && HCSR::HRIE(m_hcsr)) {
 				++m_pendingRXInterrupts;
 			}
@@ -106,8 +106,7 @@ public:
 
 			uint32_t word = (b[0]<<0) | (b[1]<<8) | (b[2]<<16) | (b[3]<<24);
 
-			m_rx.waitNotFull();
-			m_rx.push_back(word);
+			m_rx.push(word);
 			if (HCSR::HEN(m_hcsr) && HCSR::HRIE(m_hcsr)) {
 				++m_pendingRXInterrupts;
 			}
@@ -115,8 +114,7 @@ public:
 	}
 
         dsp56k::TWord readRX() {
-		m_rx.waitNotEmpty();
-		return m_rx.pop_front();
+		return m_rx.pop();
 	}
 
         dsp56k::TWord readRX(dsp56k::Instruction _inst) {
@@ -136,28 +134,26 @@ public:
                         res = m_rx.front();
                         break;
                 default:
-                        res = m_rx.pop_front();
+                        res = m_rx.pop();
                         break;
                 }
 
                 return res;
 	}
 
-	void writeTX(dsp56k::TWord _val) {
-		m_tx.waitNotFull();
-		m_tx.push_back(_val);
+	void writeTX(dsp56k::TWord value) {
+		m_tx.push(value);
 		++m_pendingTXInterrupts;
 	}
 
 	uint32_t readTX() {
-		m_tx.waitNotEmpty();
-		return m_tx.pop_front();
+		return m_tx.pop();
 	}
 
 private:
 	HCSR m_hcsr;
-	dsp56k::RingBuffer<dsp56k::TWord, 8192, true> m_rx;
-	dsp56k::RingBuffer<dsp56k::TWord, 8192, true> m_tx;
+	Queue<dsp56k::TWord, CircularBuffer<dsp56k::TWord, 8192>> m_rx;
+	Queue<dsp56k::TWord, CircularBuffer<dsp56k::TWord, 8192>> m_tx;
 	std::atomic<uint32_t> m_pendingRXInterrupts;
 	std::atomic<uint32_t> m_pendingTXInterrupts;
 
