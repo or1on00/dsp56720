@@ -1,7 +1,4 @@
-#define FUSE_USE_VERSION 35
-
 #include <dsp56kEmu/dsp.h>
-#include <fuse.h>
 #include <cstring>
 #include <csignal>
 
@@ -12,156 +9,11 @@
 #include "dsp56720/cgm.h"
 #include "dsp56720/ccm.h"
 #include "dsp56720/chipid.h"
+#include "vfs/filesystem.h"
 
 #include <iostream>
 
-class File {
-public:
-	virtual std::size_t read(char *buf, std::size_t count, std::size_t pos) = 0;
-	virtual std::size_t write(const char *buf, std::size_t count, std::size_t pos) = 0;
-	virtual std::size_t size() = 0;
-};
-
-#include <filesystem>
-#include <unordered_set>
-class FileSystem {
-public:
-	std::unordered_set<std::string> list(std::string prefix) {
-		// Prefix must have a trailing slash
-		if (prefix.back() != '/') {
-			prefix += '/';
-		}
-
-		std::unordered_set<std::string> unique;
-		for (auto const& pair : m_files) {
-			auto const& path = pair.first;
-
-			if (path.rfind(prefix, 0) != 0) {
-				continue;
-			}
-
-			auto start = prefix.size();
-			auto end = path.find('/', start);
-
-			unique.emplace(path.substr(start, end-start));
-		}
-
-		return unique;
-	}
-
-	std::shared_ptr<File> get(std::string filename) {
-		auto it = m_files.find(filename);
-		if (it == m_files.end()) {
-			return nullptr;
-		}
-
-		return it->second;
-	}
-
-	bool exists(std::string prefix) {
-		for (auto const& pair : m_files) {
-			auto const& path = pair.first;
-
-			if (path.rfind(prefix, 0) == 0) {
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	template <typename T>
-	void put(std::string filename, T file) {
-		m_files[filename] = std::make_shared<T>(file);
-	}
-
-private:
-	std::unordered_map<std::string, std::shared_ptr<File>> m_files;
-};
-
-FileSystem fs;
-
-static int dsp56720_open(const char *path, struct fuse_file_info *fi) {
-	std::cerr << "open: " << path << std::endl;
-	auto file = fs.get(path);
-	if (!file) {
-		return -ENOENT;
-	}
-
-	return 0;
-}
-
-static int dsp56720_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-	std::cerr << "read: " << path << std::endl;
-	auto file = fs.get(path);
-	if (!file) {
-		return -ENOENT;
-	}
-
-
-	return file->read(buf, size, offset);
-};
-
-static int dsp56720_write(const char *path, const char *buf, size_t size,
-		      off_t offset, struct fuse_file_info *fi)
-{
-	std::cerr << "write: " << path << std::endl;
-	auto file = fs.get(path);
-	if (!file) {
-		return -ENOENT;
-	}
-
-	return file->write(buf, size, offset);
-}
-
-static int dsp56720_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-			off_t offset, struct fuse_file_info *fi,
-			enum fuse_readdir_flags flags)
-{
-	std::cerr << "readdir: " << path << std::endl;
-	if (!fs.exists(path)) {
-		return -ENOENT;
-	}
-
-	filler(buf, ".", NULL, 0, fuse_fill_dir_flags(0));
-	filler(buf, "..", NULL, 0, fuse_fill_dir_flags(0));
-
-	for (auto const& filename : fs.list(path)) {
-		filler(buf, filename.c_str(), NULL, 0, fuse_fill_dir_flags(0));
-	}
-
-	return 0;
-}
-
-static int dsp56720_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
-	std::cerr << "getattr: " << path << std::endl;
-	if (fs.exists(path)) {
-		auto file = fs.get(path);
-
-		if (file) {
-			stbuf->st_mode = 0755 | S_IFREG;
-			stbuf->st_nlink = 1;
-			stbuf->st_size = file->size();
-		} else {
-			stbuf->st_mode = 0755 | S_IFDIR;
-			stbuf->st_nlink = 2;
-		}
-
-		return 0;
-	}
-
-	return -ENOENT;
-}
-
-static const struct fuse_operations operations = {
-	.getattr = dsp56720_getattr,
-	.open    = dsp56720_open,
-	.read	 = dsp56720_read,
-	.write	 = dsp56720_write,
-	.readdir = dsp56720_readdir,
-};
-
-class PinInterface : public File {
+class PinInterface : public vfs::File {
 public:
 	PinInterface(std::atomic<bool>& value) : m_value(value) {}
 
@@ -210,7 +62,7 @@ private:
 	std::atomic<bool>& m_value;
 };
 
-class SerialInterface : public File {
+class SerialInterface : public vfs::File {
 public:
 	SerialInterface(dsp56720::SerialHostInterace& shi) : m_shi(shi) {}
 
@@ -239,7 +91,7 @@ private:
 	dsp56720::SerialHostInterace& m_shi;
 };
 
-class AudioInputInterface : public File {
+class AudioInputInterface : public vfs::File {
 public:
 	AudioInputInterface(dsp56720::EnhancedSerialAudioInterface& esai, size_t n)
 		: m_esai(esai), m_n(n) {}
@@ -274,7 +126,7 @@ private:
 	size_t m_n;
 };
 
-class AudioOutputInterface : public File {
+class AudioOutputInterface : public vfs::File {
 public:
 	AudioOutputInterface(dsp56720::EnhancedSerialAudioInterface& esai, size_t n)
 		: m_esai(esai), m_n(n) {}
@@ -318,12 +170,14 @@ void signalHandler(int signal) {
 }
 
 int main(int argc, char *argv[]) {
+	vfs::Filesystem fs("./mount");
+
 	std::atomic<bool> running{true};
 	std::atomic<bool> reset, moda0;
 
 	// TODO: Use a EnumInterface mapping '0' -> 0 and '1' -> 1
-	fs.put("/pins/reset", PinInterface{reset});
-	fs.put("/pins/moda0", PinInterface{moda0});
+	fs.tree().put("/pins/reset", PinInterface{reset});
+	fs.tree().put("/pins/moda0", PinInterface{moda0});
 
 	dsp56720::ClockGenerationModule cgm;
 	dsp56720::ChipConfigurationModule ccm;
@@ -331,11 +185,11 @@ int main(int argc, char *argv[]) {
 	dsp56720::EnhancedSerialAudioInterface esai{cgm};
 	dsp56720::ChipIdentification chidr{0};
 
-	fs.put("/peripherals/shi0", SerialInterface{shi0});
-	fs.put("/peripherals/esai/input0", AudioInputInterface{esai, 0});
-	fs.put("/peripherals/esai/ouput0", AudioOutputInterface{esai, 0});
-	fs.put("/peripherals/esai/ouput1", AudioOutputInterface{esai, 1});
-	fs.put("/peripherals/esai/ouput2", AudioOutputInterface{esai, 2});
+	fs.tree().put("/peripherals/shi0", SerialInterface{shi0});
+	fs.tree().put("/peripherals/esai/input0", AudioInputInterface{esai, 0});
+	fs.tree().put("/peripherals/esai/ouput0", AudioOutputInterface{esai, 0});
+	fs.tree().put("/peripherals/esai/ouput1", AudioOutputInterface{esai, 1});
+	fs.tree().put("/peripherals/esai/ouput2", AudioOutputInterface{esai, 2});
 
 	dsp56720::Peripherals peripherals{cgm, ccm, shi0, esai, chidr};
 
@@ -358,27 +212,33 @@ int main(int argc, char *argv[]) {
 
 	std::thread mainloop([&](){
 		// TODO: Handle RX interrupt better
-		auto count = shi0.readRX();
-		auto address = shi0.readRX();
+		try {
+			auto count = shi0.readRX();
+			auto address = shi0.readRX();
 
-		std::cout << "Booting count=" << count << " words to address=" << address
-			<< std::endl;
+			std::cout << "Booting count=" << count << " words to address=" << address
+				<< std::endl;
 
-		for (size_t i = 0; i < count; i++) {
-			auto word = shi0.readRX();
-			dsp.memory().set(dsp56k::MemArea_P, address + i, word);
-		}
+			for (size_t i = 0; i < count; i++) {
+				auto word = shi0.readRX();
+				dsp.memory().set(dsp56k::MemArea_P, address + i, word);
+			}
 
-		dsp.setPC(address);
+			dsp.setPC(address);
 
-		std::cout << "Booted" << std::endl;
+			std::cout << "Booted" << std::endl;
 
-		while (running) {
-			std::cout << HEX(dsp.getPC().toWord()) << std::endl;
-			dsp.exec();
+			while (running) {
+				/* if (halt) { */
+				/* 	std::this_thread::yield(); */
+				/* } else { */
+					dsp.exec();
+				/* } */
+			}
+		} catch(dsp56720::QueueShutdown&) {
+			return;
 		}
 	});
-	struct fuse* fuse = NULL;
 
 	g_signalHandler = [&](auto signal) {
 		std::cout << "INTERRUPTED!" << std::endl;
@@ -386,29 +246,10 @@ int main(int argc, char *argv[]) {
 		running = false;
 		dsp.terminate();
 
-		if (fuse) {
-			fuse_exit(fuse);
-		}
+		fs.shutdown();
 	};
 
-	// TODO: Do we have to pass fuse args?
-	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-	fuse = fuse_new(&args, &operations, sizeof(operations), NULL);
-	if (!fuse) {
-		return 1;
-	}
-
-	if (fuse_mount(fuse, "./mount")) {
-		fuse_destroy(fuse);
-		return 1;
-	}
-
-	struct fuse_loop_config cfg = { .max_idle_threads = 10 };
-	int ret = fuse_loop_mt(fuse, &cfg);
-
-	fuse_unmount(fuse);
-	fuse_destroy(fuse);
-
+	int ret = fs.run();
 	mainloop.join();
 
 	return ret;
