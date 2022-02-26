@@ -96,6 +96,13 @@ public:
 		}
 	}
 
+	void writeRX(const dsp56k::TWord word) {
+		m_rx.push(word & 0x00ffffff);
+		if (HCSR::HEN(m_hcsr) && HCSR::HRIE(m_hcsr)) {
+			++m_pendingRXInterrupts;
+		}
+	}
+
 	void pipe(std::FILE *f) {
 		for (;;) {
 			uint8_t b[4];
@@ -146,7 +153,7 @@ public:
 		++m_pendingTXInterrupts;
 	}
 
-	uint32_t readTX() {
+	dsp56k::TWord readTX() {
 		return m_tx.pop();
 	}
 

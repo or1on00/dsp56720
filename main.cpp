@@ -63,35 +63,6 @@ private:
 	std::atomic<bool>& m_value;
 };
 
-class SerialInterface : public vfs::File {
-public:
-	SerialInterface(dsp56720::SerialHostInterace& shi) : m_shi(shi) {}
-
-	virtual std::size_t size() {
-		return 4096;
-	}
-
-	virtual std::size_t read(char *buf, std::size_t count, std::size_t pos) override {
-		return 0;
-	}
-
-	virtual std::size_t write(const char *buf, std::size_t count, std::size_t pos) override {
-		assert(count % 4 == 0);
-		size_t wordCount = count / sizeof(dsp56k::TWord);
-
-		try {
-			m_shi.writeRX(reinterpret_cast<const dsp56k::TWord*>(buf), wordCount);
-		} catch(dsp56720::QueueShutdown&) {
-			return 0;
-		}
-
-		return wordCount * sizeof(dsp56k::TWord);
-	}
-
-private:
-	dsp56720::SerialHostInterace& m_shi;
-};
-
 std::function<void(int)> g_signalHandler;
 
 void signalHandler(int signal) {
@@ -128,6 +99,28 @@ struct vfs::SequentialAccess<dsp56720::EnhancedSerialAudioInterface::Output> {
 	}
 };
 
+template <>
+struct vfs::SequentialAccess<dsp56720::SerialHostInterace> {
+	static constexpr bool readable = true;
+	static constexpr bool writable = true;
+
+	dsp56k::TWord read(dsp56720::SerialHostInterace& shi) {
+		try {
+			return shi.readTX();
+		} catch(dsp56720::QueueShutdown&) {
+			throw vfs::Abort{};
+		}
+	}
+
+	void write(dsp56720::SerialHostInterace& shi, dsp56k::TWord value) {
+		try {
+			shi.writeRX(value);
+		} catch(dsp56720::QueueShutdown&) {
+			throw vfs::Abort{};
+		}
+	}
+};
+
 int main(int argc, char *argv[]) {
 	vfs::Filesystem fs("./mount");
 
@@ -158,7 +151,8 @@ int main(int argc, char *argv[]) {
 						esai.input(i)});
 	}
 
-	fs.tree().put("/peripherals/shi0", SerialInterface{shi0});
+	fs.tree().put("/peripherals/shi0",
+			vfs::SequentialFile<uint32_t, dsp56720::SerialHostInterace>{shi0});
 
 	dsp56720::Peripherals peripherals{cgm, ccm, shi0, esai, chidr};
 
