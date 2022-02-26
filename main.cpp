@@ -10,6 +10,7 @@
 #include "dsp56720/ccm.h"
 #include "dsp56720/chipid.h"
 #include "vfs/filesystem.h"
+#include "vfs/traits.h"
 
 #include <iostream>
 
@@ -91,76 +92,6 @@ private:
 	dsp56720::SerialHostInterace& m_shi;
 };
 
-class AudioInputInterface : public vfs::File {
-public:
-	AudioInputInterface(dsp56720::EnhancedSerialAudioInterface& esai, size_t n)
-		: m_esai(esai), m_n(n) {}
-
-	virtual std::size_t size() {
-		return 4096;
-	}
-
-	virtual std::size_t read(char *buf, std::size_t count, std::size_t pos) override {
-		return 0;
-	}
-
-	virtual std::size_t write(const char *buf, std::size_t count, std::size_t pos) override {
-		// TODO: Allow different buffer sizes
-		assert(count % 4 == 0);
-
-		auto words = reinterpret_cast<const dsp56k::TWord*>(buf);
-
-		try {
-			for (size_t i = 0; i < count / sizeof(dsp56k::TWord); i++) {
-				m_esai.writeInput(m_n, *words++);
-			}
-		} catch(dsp56720::QueueShutdown&) {
-			return 0;
-		}
-
-		return count;
-	}
-
-private:
-	dsp56720::EnhancedSerialAudioInterface& m_esai;
-	size_t m_n;
-};
-
-class AudioOutputInterface : public vfs::File {
-public:
-	AudioOutputInterface(dsp56720::EnhancedSerialAudioInterface& esai, size_t n)
-		: m_esai(esai), m_n(n) {}
-
-	virtual std::size_t size() {
-		return 4096;
-	}
-
-	virtual std::size_t read(char *buf, std::size_t count, std::size_t pos) override {
-		// TODO: Allow different buffer sizes
-		assert(count % 4 == 0);
-
-		auto words = reinterpret_cast<dsp56k::TWord*>(buf);
-
-		try {
-			for (size_t i = 0; i < count / sizeof(dsp56k::TWord); i++) {
-				*words++ = m_esai.readOutput(m_n);
-			}
-		} catch(dsp56720::QueueShutdown&) {
-			return 0;
-		}
-
-		return count;
-	}
-
-	virtual std::size_t write(const char *buf, std::size_t count, std::size_t pos) override {
-		return 0;
-	}
-
-private:
-	dsp56720::EnhancedSerialAudioInterface& m_esai;
-	size_t m_n;
-};
-
 std::function<void(int)> g_signalHandler;
 
 void signalHandler(int signal) {
@@ -168,6 +99,34 @@ void signalHandler(int signal) {
 		g_signalHandler(signal);
 	}
 }
+
+template <>
+struct vfs::SequentialAccess<dsp56720::EnhancedSerialAudioInterface::Input> {
+	static constexpr bool readable = false;
+	static constexpr bool writable = true;
+
+	void write(dsp56720::EnhancedSerialAudioInterface::Input& input, uint32_t sample) {
+		try {
+			input.writeSample(sample);
+		} catch(dsp56720::QueueShutdown&) {
+			throw vfs::Abort{};
+		}
+	}
+};
+
+template <>
+struct vfs::SequentialAccess<dsp56720::EnhancedSerialAudioInterface::Output> {
+	static constexpr bool readable = true;
+	static constexpr bool writable = false;
+
+	uint32_t read(dsp56720::EnhancedSerialAudioInterface::Output& output) {
+		try {
+			return output.readSample();
+		} catch(dsp56720::QueueShutdown&) {
+			throw vfs::Abort{};
+		}
+	}
+};
 
 int main(int argc, char *argv[]) {
 	vfs::Filesystem fs("./mount");
@@ -185,11 +144,21 @@ int main(int argc, char *argv[]) {
 	dsp56720::EnhancedSerialAudioInterface esai{cgm};
 	dsp56720::ChipIdentification chidr{0};
 
+	for (size_t i = 0; i < esai.outputs(); i++) {
+		fs.tree().put("/peripherals/esai/output" + std::to_string(i),
+				vfs::SequentialFile<uint32_t,
+					dsp56720::EnhancedSerialAudioInterface::Output>{
+						esai.output(i)});
+	}
+
+	for (size_t i = 0; i < esai.inputs(); i++) {
+		fs.tree().put("/peripherals/esai/input" + std::to_string(i),
+				vfs::SequentialFile<uint32_t,
+					dsp56720::EnhancedSerialAudioInterface::Input>{
+						esai.input(i)});
+	}
+
 	fs.tree().put("/peripherals/shi0", SerialInterface{shi0});
-	fs.tree().put("/peripherals/esai/input0", AudioInputInterface{esai, 0});
-	fs.tree().put("/peripherals/esai/ouput0", AudioOutputInterface{esai, 0});
-	fs.tree().put("/peripherals/esai/ouput1", AudioOutputInterface{esai, 1});
-	fs.tree().put("/peripherals/esai/ouput2", AudioOutputInterface{esai, 2});
 
 	dsp56720::Peripherals peripherals{cgm, ccm, shi0, esai, chidr};
 
@@ -211,7 +180,6 @@ int main(int argc, char *argv[]) {
 	}
 
 	std::thread mainloop([&](){
-		// TODO: Handle RX interrupt better
 		try {
 			auto count = shi0.readRX();
 			auto address = shi0.readRX();

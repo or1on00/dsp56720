@@ -8,6 +8,32 @@
 namespace dsp56720 {
 class EnhancedSerialAudioInterface : public Peripheral {
 public:
+	class Output {
+	public:
+		uint32_t readSample() { return m_queue.pop(); }
+
+	private:
+		friend EnhancedSerialAudioInterface;
+
+		void shutdown() { m_queue.shutdown(); }
+		void push(uint32_t v) { m_queue.push(v); }
+
+		Queue<uint32_t, CircularBuffer<uint32_t, 8192>> m_queue;
+	};
+
+	class Input {
+	public:
+		void writeSample(uint32_t v) { m_queue.push(v); }
+
+	private:
+		friend EnhancedSerialAudioInterface;
+
+		void shutdown() { m_queue.shutdown(); }
+		uint32_t pop() { return m_queue.pop(); }
+
+		Queue<uint32_t, CircularBuffer<uint32_t, 8192>> m_queue;
+	};
+
 	struct SR : BitField<dsp56k::TWord> {
 		using BitField<dsp56k::TWord>::operator=;
 
@@ -106,13 +132,16 @@ public:
 		return m_registers;
 	}
 
-	void writeInput(size_t n, dsp56k::TWord word) {
-		m_audioInputs[n].push(word);
+	Input& input(size_t n) {
+		return m_audioInputs[n];
 	}
 
-	dsp56k::TWord readOutput(size_t n) {
-		return m_audioOutputs[n].pop();
+	Output& output(size_t n) {
+		return m_audioOutputs[n];
 	}
+
+	size_t outputs() { return m_audioOutputs.size(); }
+	size_t inputs() { return m_audioInputs.size(); }
 
 	dsp56k::TWord readRX(uint32_t index) {
 		if (!inputEnabled(index)) {
@@ -199,8 +228,8 @@ private:
 
 	ClockGenerationModule& m_cgm;
 
-	std::array<Queue<uint32_t, CircularBuffer<uint32_t, 8192>>, 4> m_audioInputs;
-	std::array<Queue<uint32_t, CircularBuffer<uint32_t, 8192>>, 6> m_audioOutputs;
+	std::array<Input, 4> m_audioInputs;
+	std::array<Output, 6> m_audioOutputs;
 
 	// Words written by the DSP
 	std::array<dsp56k::TWord, 6> m_tx;

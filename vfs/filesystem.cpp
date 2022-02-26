@@ -27,7 +27,11 @@ static int dsp56720_read(const char *path, char *buf, size_t size, off_t offset,
 	}
 
 
-	return file->read(buf, size, offset);
+	try {
+		return file->read(buf, size, offset);
+	} catch (vfs::Abort&) {
+		return -EINTR;
+	}
 };
 
 static int dsp56720_write(const char *path, const char *buf, size_t size,
@@ -41,7 +45,11 @@ static int dsp56720_write(const char *path, const char *buf, size_t size,
 		return -ENOENT;
 	}
 
-	return file->write(buf, size, offset);
+	try {
+		return file->write(buf, size, offset);
+	} catch (vfs::Abort&) {
+		return -EINTR;
+	}
 }
 
 static int dsp56720_readdir(const char *path, void *buf, fuse_fill_dir_t filler,

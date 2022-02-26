@@ -8,6 +8,8 @@
 struct fuse;
 
 namespace vfs {
+struct Abort : public std::exception {};
+
 class File {
 public:
 	virtual std::size_t read(char *buf, std::size_t count, std::size_t pos) = 0;
