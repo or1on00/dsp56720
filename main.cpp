@@ -1,9 +1,13 @@
 #include <dsp56kEmu/dsp.h>
+#include <limits.h>
 #include <cstring>
 #include <csignal>
+#include <cstdarg>
+#include <iostream>
 
 #include "dsp56720/peripherals.h"
 #include "dsp56720/bitfield.h"
+#include "dsp56720/debugger.h"
 #include "dsp56720/shi.h"
 #include "dsp56720/esai.h"
 #include "dsp56720/cgm.h"
@@ -11,8 +15,6 @@
 #include "dsp56720/chipid.h"
 #include "vfs/filesystem.h"
 #include "vfs/traits.h"
-
-#include <iostream>
 
 class PinInterface : public vfs::File {
 public:
@@ -121,6 +123,16 @@ struct vfs::SequentialAccess<dsp56720::SerialHostInterace> {
 	}
 };
 
+std::string format(const char* format, ...) {
+	char buffer[PATH_MAX];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+
+	return std::string(buffer, strnlen(buffer, sizeof(buffer)));
+}
+
 int main(int argc, char *argv[]) {
 	vfs::Filesystem fs("./mount");
 
@@ -136,9 +148,10 @@ int main(int argc, char *argv[]) {
 	dsp56720::SerialHostInterace shi0;
 	dsp56720::EnhancedSerialAudioInterface esai{cgm};
 	dsp56720::ChipIdentification chidr{0};
+	dsp56720::Debugger debugger{false};
 
 	for (size_t i = 0; i < esai.outputs(); i++) {
-		fs.tree().put("/peripherals/esai/output" + std::to_string(i),
+		fs.tree().put(format("/peripherals/esai/output%d", i),
 				vfs::SequentialFile<uint32_t,
 					dsp56720::EnhancedSerialAudioInterface::Output>{
 						esai.output(i)});
@@ -191,11 +204,7 @@ int main(int argc, char *argv[]) {
 			std::cout << "Booted" << std::endl;
 
 			while (running) {
-				/* if (halt) { */
-				/* 	std::this_thread::yield(); */
-				/* } else { */
-					dsp.exec();
-				/* } */
+				debugger.exec(dsp);
 			}
 		} catch(dsp56720::QueueShutdown&) {
 			return;
@@ -207,6 +216,9 @@ int main(int argc, char *argv[]) {
 
 		running = false;
 		dsp.terminate();
+
+		// Wake debugger threads to allow everything to terminate
+		debugger.continueExecution();
 
 		fs.shutdown();
 	};
